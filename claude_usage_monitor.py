@@ -26,15 +26,16 @@ PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 POLL_INTERVAL = 60  # seconds between API calls
 POSITION_INTERVAL = 200  # ms between position updates
 
-# Theme - matches Claude dark UI
-BG = "#1a1a1a"
-BG_BAR = "#333333"
-FG = "#e0e0e0"
-FG_DIM = "#777777"
-BAR_BLUE = "#4a9eff"
-BAR_AMBER = "#ffb400"
-BAR_RED = "#ff4444"
-BORDER_COLOR = "#333333"
+# Theme - matches Claude desktop dark sidebar
+BG = "#292929"
+BG_TRANSPARENT = "#010101"  # color keyed out for rounded corners
+BG_BAR = "#3d3d3d"
+FG = "#e3e3e3"
+FG_DIM = "#8a8a8a"
+BAR_BLUE = "#6b9fff"
+BAR_AMBER = "#e5a633"
+BAR_RED = "#e55555"
+CORNER_RADIUS = 10
 
 QUOTA_LABELS = {
     "five_hour": "Session",
@@ -178,14 +179,11 @@ class UsageOverlay:
     def start(self):
         self.root = tk.Tk()
         self.root.title("Claude Usage")
-        self.root.configure(bg=BG)
+        self.root.configure(bg=BG_TRANSPARENT)
         self.root.overrideredirect(True)  # borderless
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", 0.95)
-
-        # Make click-through for the transparent parts
-        # But keep it clickable for the widget itself
-        self.root.wm_attributes("-transparentcolor", "")
+        self.root.wm_attributes("-transparentcolor", BG_TRANSPARENT)
 
         # Build the compact widget
         self._build_ui()
@@ -206,20 +204,41 @@ class UsageOverlay:
         for child in widget.winfo_children():
             self._bind_click_all(child)
 
+    def _round_rect(self, canvas, x1, y1, x2, y2, r, **kwargs):
+        """Draw a rounded rectangle on a canvas."""
+        points = [
+            x1 + r, y1, x2 - r, y1,
+            x2, y1, x2, y1 + r,
+            x2, y2 - r, x2, y2,
+            x2 - r, y2, x1 + r, y2,
+            x1, y2, x1, y2 - r,
+            x1, y1 + r, x1, y1,
+        ]
+        return canvas.create_polygon(points, smooth=True, **kwargs)
+
     def _build_ui(self):
-        # Main container with subtle border
-        self.container = tk.Frame(self.root, bg=BG, highlightbackground=BORDER_COLOR,
-                                  highlightthickness=1, padx=10, pady=7)
-        self.container.pack(fill="both", expand=True)
+        # Use a Canvas to draw the rounded background
+        self.bg_canvas = tk.Canvas(self.root, highlightthickness=0, bd=0,
+                                    bg=BG_TRANSPARENT)
+        self.bg_canvas.pack(fill="both", expand=True)
+
+        # Inner frame placed on the canvas
+        self.container = tk.Frame(self.bg_canvas, bg=BG, padx=12, pady=8)
+        self.container_window = self.bg_canvas.create_window(
+            CORNER_RADIUS, CORNER_RADIUS, anchor="nw", window=self.container)
+
+        # After layout, draw the rounded rect background
+        self.root.after(50, self._draw_bg)
 
         # Compact view: stacked rows
         self.compact_frame = tk.Frame(self.container, bg=BG)
         self.compact_frame.pack(fill="x")
 
-        # Title label
-        self.title_label = tk.Label(self.compact_frame, text="Usage", font=("Segoe UI", 10, "bold"),
+        # Title label - matches Claude sidebar font style
+        self.title_label = tk.Label(self.compact_frame, text="Usage",
+                                     font=("Segoe UI", 9),
                                      fg=FG_DIM, bg=BG)
-        self.title_label.pack(anchor="w", pady=(0, 2))
+        self.title_label.pack(anchor="w", pady=(0, 4))
 
         # Compact bar placeholders
         self.compact_bars_frame = tk.Frame(self.compact_frame, bg=BG)
@@ -228,8 +247,31 @@ class UsageOverlay:
         # Expanded view (hidden by default)
         self.expanded_frame = tk.Frame(self.container, bg=BG)
 
+    def _draw_bg(self):
+        """Redraw the rounded rectangle background."""
+        self.root.update_idletasks()
+        w = self.container.winfo_reqwidth() + CORNER_RADIUS * 2
+        h = self.container.winfo_reqheight() + CORNER_RADIUS * 2
+        self.bg_canvas.config(width=w, height=h)
+        self.bg_canvas.delete("bg")
+        self._round_rect(self.bg_canvas, 0, 0, w, h, CORNER_RADIUS,
+                          fill=BG, outline="", tags="bg")
+        self.bg_canvas.tag_lower("bg")
+
+    def _draw_rounded_bar(self, canvas, x, y, w, h, fill_pct, color):
+        """Draw a rounded progress bar on canvas."""
+        r = h // 2
+        # Background track
+        self._round_rect(canvas, x, y, x + w, y + h, r, fill=BG_BAR, outline="")
+        # Fill
+        fill_w = int(w * min(fill_pct, 100) / 100)
+        if fill_w > r * 2:
+            self._round_rect(canvas, x, y, x + fill_w, y + h, r, fill=color, outline="")
+        elif fill_w > 0:
+            self._round_rect(canvas, x, y, x + max(fill_w, r * 2), y + h, r, fill=color, outline="")
+
     def _update_compact(self):
-        """Update the compact single-line view."""
+        """Update the compact stacked view."""
         for w in self.compact_bars_frame.winfo_children():
             w.destroy()
 
@@ -257,23 +299,21 @@ class UsageOverlay:
 
         for key, label, pct, _ in entries:
             f = tk.Frame(self.compact_bars_frame, bg=BG)
-            f.pack(fill="x", pady=1)
+            f.pack(fill="x", pady=2)
 
             short = short_labels.get(key, key)
-            tk.Label(f, text=short, font=("Segoe UI", 9), fg=FG_DIM, bg=BG, width=3,
+            tk.Label(f, text=short, font=("Segoe UI", 8), fg=FG_DIM, bg=BG, width=3,
                      anchor="w").pack(side="left")
 
-            # Mini bar
-            bar_w, bar_h = 50, 10
-            c = tk.Canvas(f, width=bar_w, height=bar_h, bg=BG_BAR,
+            # Rounded mini bar
+            bar_w, bar_h = 62, 8
+            c = tk.Canvas(f, width=bar_w, height=bar_h, bg=BG,
                           highlightthickness=0, bd=0)
-            c.pack(side="left", padx=2)
-            fill = int(bar_w * min(pct, 100) / 100)
-            if fill > 0:
-                c.create_rectangle(0, 0, fill, bar_h, fill=bar_color(pct), outline="")
+            c.pack(side="left", padx=(2, 4))
+            self._draw_rounded_bar(c, 0, 0, bar_w, bar_h, pct, bar_color(pct))
 
             color = bar_color(pct)
-            tk.Label(f, text=f"{pct:.0f}%", font=("Segoe UI", 9, "bold"),
+            tk.Label(f, text=f"{pct:.0f}%", font=("Segoe UI", 8),
                      fg=color, bg=BG).pack(side="left")
 
     def _update_expanded(self):
@@ -288,8 +328,8 @@ class UsageOverlay:
             name = acct.get("display_name", "")
             plan = org.get("organization_type", "").replace("_", " ").title()
             if name:
-                tk.Label(self.expanded_frame, text=f"{name} - {plan}",
-                         font=("Segoe UI", 11), fg=BAR_BLUE, bg=BG).pack(anchor="w", pady=(5, 3))
+                tk.Label(self.expanded_frame, text=f"{name} \u00b7 {plan}",
+                         font=("Segoe UI", 9), fg=FG_DIM, bg=BG).pack(anchor="w", pady=(5, 3))
 
         entries = get_active_quotas(self.usage_data)
         if isinstance(self.usage_data, str):
@@ -304,23 +344,21 @@ class UsageOverlay:
             # Label row
             top = tk.Frame(row, bg=BG)
             top.pack(fill="x")
-            tk.Label(top, text=label, font=("Segoe UI", 11), fg=FG, bg=BG).pack(side="left")
+            tk.Label(top, text=label, font=("Segoe UI", 9), fg=FG, bg=BG).pack(side="left")
 
             reset_str = time_until(resets_at)
             right_text = f"{pct:.0f}%"
             if reset_str:
-                right_text += f"  ({reset_str})"
-            tk.Label(top, text=right_text, font=("Segoe UI", 11, "bold"),
+                right_text += f"  \u00b7 {reset_str}"
+            tk.Label(top, text=right_text, font=("Segoe UI", 9),
                      fg=bar_color(pct), bg=BG).pack(side="right")
 
-            # Bar
-            bar_w, bar_h = 250, 13
-            c = tk.Canvas(row, width=bar_w, height=bar_h, bg=BG_BAR,
+            # Rounded bar
+            bar_w, bar_h = 220, 8
+            c = tk.Canvas(row, width=bar_w, height=bar_h, bg=BG,
                           highlightthickness=0, bd=0)
-            c.pack(fill="x", pady=1)
-            fill = int(bar_w * min(pct, 100) / 100)
-            if fill > 0:
-                c.create_rectangle(0, 0, fill, bar_h, fill=bar_color(pct), outline="")
+            c.pack(fill="x", pady=(2, 0))
+            self._draw_rounded_bar(c, 0, 0, bar_w, bar_h, pct, bar_color(pct))
 
         # Extra usage (over-limit spending)
         if isinstance(self.usage_data, dict):
@@ -328,29 +366,30 @@ class UsageOverlay:
             if extra and isinstance(extra, dict) and extra.get("is_enabled"):
                 used = extra.get("used_credits", 0)
                 limit = extra.get("monthly_limit", 0)
-                tk.Frame(self.expanded_frame, bg="#444", height=1).pack(fill="x", pady=5)
 
-                # Label row
+                # Subtle separator
+                sep = tk.Canvas(self.expanded_frame, height=1, bg=BG,
+                                highlightthickness=0, bd=0)
+                sep.pack(fill="x", pady=6)
+                sep.create_line(0, 0, 300, 0, fill="#3d3d3d")
+
                 row = tk.Frame(self.expanded_frame, bg=BG)
                 row.pack(fill="x", pady=3)
 
                 top = tk.Frame(row, bg=BG)
                 top.pack(fill="x")
-                tk.Label(top, text="Extra (Over-limit)", font=("Segoe UI", 11), fg=FG, bg=BG).pack(side="left")
+                tk.Label(top, text="Monthly extra", font=("Segoe UI", 9), fg=FG, bg=BG).pack(side="left")
 
                 pct_used = (used / limit * 100) if limit > 0 else 0
-                tk.Label(top, text=f"${used:.2f}/${limit:.0f}  ({pct_used:.0f}%)",
-                         font=("Segoe UI", 11, "bold"),
+                tk.Label(top, text=f"${used:.2f} / ${limit:.0f}",
+                         font=("Segoe UI", 9),
                          fg=bar_color(pct_used), bg=BG).pack(side="right")
 
-                # Bar
-                bar_w, bar_h = 250, 13
-                c = tk.Canvas(row, width=bar_w, height=bar_h, bg=BG_BAR,
+                bar_w, bar_h = 220, 8
+                c = tk.Canvas(row, width=bar_w, height=bar_h, bg=BG,
                               highlightthickness=0, bd=0)
-                c.pack(fill="x", pady=1)
-                fill = int(bar_w * min(pct_used, 100) / 100)
-                if fill > 0:
-                    c.create_rectangle(0, 0, fill, bar_h, fill=bar_color(pct_used), outline="")
+                c.pack(fill="x", pady=(2, 0))
+                self._draw_rounded_bar(c, 0, 0, bar_w, bar_h, pct_used, bar_color(pct_used))
 
     def _toggle_expand(self, event=None):
         self.expanded = not self.expanded
@@ -362,6 +401,7 @@ class UsageOverlay:
         # Re-bind clicks on new widgets
         self._bind_click_all(self.root)
         self.root.update_idletasks()
+        self.root.after(50, self._draw_bg)
 
     def _track_position(self):
         """Keep the overlay positioned inside the Claude window.
@@ -428,8 +468,30 @@ class UsageOverlay:
         if self.expanded:
             self._update_expanded()
         self._bind_click_all(self.root)
+        self.root.after(50, self._draw_bg)
+
+
+def kill_existing_overlays():
+    """Kill any already-running overlay instances."""
+    import win32process
+    my_pid = os.getpid()
+    pids = set()
+
+    def cb(hwnd, _):
+        if win32gui.GetWindowText(hwnd) == "Claude Usage":
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid != my_pid:
+                pids.add(pid)
+
+    win32gui.EnumWindows(cb, None)
+    for pid in pids:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":
+    kill_existing_overlays()
     overlay = UsageOverlay()
     overlay.start()
